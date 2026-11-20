@@ -8,3 +8,4 @@ data/source.txt
 data/*.pdf
 data/*.txt
 
+.pytest_cache/

@@ -1,21 +1,14 @@
-import chromadb
-import ollama
+"""Retrieval + grounded answer generation."""
+from __future__ import annotations
 
-EMBED_MODEL = "bge-m3"
-LLM_MODEL = "qwen2.5:7b"
-COLLECTION_NAME = "pdf_chunks"
-DB_PATH = "./chroma_db"
-TOP_K = 3
-
-# --- DB connection ---
-client = chromadb.PersistentClient(path=DB_PATH)
-collection = client.get_collection(name=COLLECTION_NAME)
+from . import config
+from .store import embed, get_collection
 
 
-def retrieve(question: str, k: int = TOP_K) -> list[str]:
+def retrieve(question: str, k: int = config.TOP_K) -> list[str]:
     """Return top-k chunk texts most similar to the question."""
-    q_emb = ollama.embeddings(model=EMBED_MODEL, prompt=question)["embedding"]
-    results = collection.query(query_embeddings=[q_emb], n_results=k)
+    collection = get_collection()
+    results = collection.query(query_embeddings=[embed(question)], n_results=k)
     return results["documents"][0]
 
 
@@ -60,30 +53,32 @@ def build_prompt(question: str, chunks: list[str]) -> list[dict]:
     ]
 
 
-def ask(question: str):
-    print(f"\n質問: {question}\n")
+def generate(messages: list[dict]) -> str:
+    """Call the local LLM (temperature 0 for repeatable answers)."""
+    import ollama
 
+    response = ollama.chat(model=config.LLM_MODEL, messages=messages, options={"temperature": 0})
+    return response["message"]["content"]
+
+
+def ask(question: str, verbose: bool = True) -> str:
     chunks = retrieve(question)
+    if verbose:
+        print(f"\n質問: {question}\n")
+        print(f"--- 取得したチャンク数: {len(chunks)} ---")
+        for i, c in enumerate(chunks):
+            print(f"[文書{i+1}] {c[:80].strip()}...")
+        print()
 
-    print(f"--- 取得したチャンク数: {len(chunks)} ---")
-    for i, c in enumerate(chunks):
-        print(f"[文書{i+1}] {c[:80].strip()}...")
-    print()
-
-    messages = build_prompt(question, chunks)
-    response = ollama.chat(
-        model=LLM_MODEL,
-        messages=messages,
-        options={"temperature": 0},
-    )
-
-    print(f"回答: {response['message']['content']}\n")
-    print("=" * 60)
+    answer = generate(build_prompt(question, chunks))
+    if verbose:
+        print(f"回答: {answer}\n")
+        print("=" * 60)
+    return answer
 
 
-if __name__ == "__main__":
-
-    questions = [
+# Evaluation questions used to check the few-shot prompt (see README).
+DEMO_QUESTIONS = [
         "他の利用者の個人情報を公開してもいいですか？",
         # 1) Tests "prohibition → no" inference (the 5th few-shot example).
         # Section 8 says collecting/publishing others' personal info is prohibited.
@@ -108,8 +103,4 @@ if __name__ == "__main__":
         "サービスが止まったら、代わりのサイトを紹介してもらえますか？",
         # 5) Pure hypothetical not addressed in doc. Should refuse cleanly:
         # "提供された文書からは分かりません."
-    ]
-
-
-    for q in questions:
-        ask(q)
+]
